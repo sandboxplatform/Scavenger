@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Scavenger Admin</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<main>
+  <!-- Login -->
+  <section id="login-view" class="hidden">
+    <h1>Scavenger Admin</h1>
+    <form id="login-form" class="card stack">
+      <div>
+        <label for="password">Admin password</label>
+        <input id="password" type="password" required autocomplete="current-password">
+      </div>
+      <button type="submit">Log in</button>
+      <div id="login-msg"></div>
+    </form>
+  </section>
+
+  <!-- Game list -->
+  <section id="list-view" class="hidden">
+    <div class="row spread">
+      <h1>Games</h1>
+      <button class="secondary" data-logout>Log out</button>
+    </div>
+    <form id="create-form" class="card stack">
+      <h2>New game</h2>
+      <div><label for="new-name">Name</label><input id="new-name" maxlength="100" required></div>
+      <div><label for="new-desc">Description (shown to players)</label><textarea id="new-desc" maxlength="2000"></textarea></div>
+      <button type="submit">Create game</button>
+      <div id="create-msg"></div>
+    </form>
+    <div id="games" class="card"></div>
+  </section>
+
+  <!-- Single game -->
+  <section id="game-view" class="hidden">
+    <div class="row spread">
+      <button class="link" id="back-btn">← All games</button>
+      <button class="secondary" data-logout>Log out</button>
+    </div>
+    <div id="game-msg"></div>
+
+    <form id="game-form" class="card stack">
+      <div class="row spread">
+        <h2 style="margin:0">Game settings</h2>
+        <span>Code: <span id="game-code" class="code"></span></span>
+      </div>
+      <p class="small muted">Player link: <a id="join-link" target="_blank" rel="noopener"></a></p>
+      <div><label for="g-name">Name</label><input id="g-name" maxlength="100" required></div>
+      <div><label for="g-desc">Description</label><textarea id="g-desc" maxlength="2000"></textarea></div>
+      <div>
+        <label for="g-status">Status</label>
+        <select id="g-status">
+          <option value="draft">Draft — players can't join yet</option>
+          <option value="active">Active — players can join and submit answers</option>
+          <option value="ended">Ended — results are final</option>
+        </select>
+      </div>
+      <div class="row">
+        <button type="submit">Save settings</button>
+        <button type="button" class="danger" id="reset-btn">Reset players</button>
+        <button type="button" class="danger" id="delete-btn">Delete game</button>
+      </div>
+    </form>
+
+    <div class="card">
+      <h2>Items</h2>
+      <p class="small muted">Answers are case-insensitive and ignore punctuation. Separate several accepted answers with <code>|</code>, e.g. <code>oak tree|oak</code>.</p>
+      <div id="items"></div>
+    </div>
+
+    <form id="item-form" class="card stack">
+      <h2>Add item</h2>
+      <div><label for="i-title">Title</label><input id="i-title" maxlength="100" required></div>
+      <div><label for="i-clue">Clue</label><textarea id="i-clue" maxlength="2000"></textarea></div>
+      <div class="row">
+        <div class="grow"><label for="i-answer">Answer</label><input id="i-answer" maxlength="500" required></div>
+        <div style="width:100px"><label for="i-points">Points</label><input id="i-points" type="number" min="0" value="1" required></div>
+      </div>
+      <button type="submit">Add item</button>
+      <div id="item-msg"></div>
+    </form>
+
+    <div class="card">
+      <div class="row spread">
+        <h2 style="margin:0">Players &amp; progress</h2>
+        <button class="link" id="refresh-btn">Refresh</button>
+      </div>
+      <div class="table-wrap" style="margin-top:12px"><table id="players"></table></div>
+    </div>
+  </section>
+</main>
+
+<script src="/common.js"></script>
+<script src="/admin.js"></script>
+</body>
+</html>
