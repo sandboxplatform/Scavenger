@@ -1,0 +1,9 @@
+.git
+.github
+tests
+photos
+*.db
+*.db-journal
+__pycache__
+*.pyc
+README.md

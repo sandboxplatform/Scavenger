@@ -17,15 +17,37 @@ Options (flags or environment variables):
 
 | Flag     | Env var                    | Default        |
 |----------|----------------------------|----------------|
-| `--host` | `SCAVENGER_HOST`           | `127.0.0.1`    |
-| `--port` | `SCAVENGER_PORT`           | `8000`         |
-| `--db`   | `SCAVENGER_DB`             | `scavenger.db` |
-| `--photos` | `SCAVENGER_PHOTOS`       | `photos/`      |
+| `--host` | `SCAVENGER_HOST`           | `127.0.0.1` (`0.0.0.0` when `$PORT` is set) |
+| `--port` | `SCAVENGER_PORT`, `PORT`   | `8000`         |
+| —        | `SCAVENGER_DATA_DIR` (or Railway's `RAILWAY_VOLUME_MOUNT_PATH`) | `.`, the folder that holds the database and photos |
+| `--db`   | `SCAVENGER_DB`             | `<data dir>/scavenger.db` |
+| `--photos` | `SCAVENGER_PHOTOS`       | `<data dir>/photos/` |
 | `--cert`, `--key` | `SCAVENGER_CERT`, `SCAVENGER_KEY` | none. Serves HTTPS when given (see [Offline mode](#offline-mode)) |
-| `--base-url` | `SCAVENGER_BASE_URL`   | `http://<host>:<port>`, used when printing links |
+| `--base-url` | `SCAVENGER_BASE_URL`   | `https://$RAILWAY_PUBLIC_DOMAIN` on Railway, else `http://<host>:<port>`. Used when printing links |
 | `--list-games` | —                    | Prints every game's admin link and exits |
 
 To let phones on the same network join, use `--host 0.0.0.0` and share `http://<your-ip>:8000/?code=XXXXXX`.
+
+## Deploy to Railway
+
+The repo includes a `Dockerfile` and `railway.json`, so Railway builds and runs it with no extra setup.
+
+1. In [Railway](https://railway.com), choose **New Project → Deploy from GitHub repo** and pick this repository.
+   If Railway offers a branch, choose `main`.
+2. **Attach a volume.** Without one, every game and photo is wiped on each redeploy.
+   - Right-click the service, or press ⌘K / Ctrl+K, and choose **Attach Volume**.
+   - Any mount path works, for example `/data`. The app finds it automatically.
+   - Railway redeploys once the volume is attached.
+3. Open the service's **Settings → Networking** and click **Generate Domain**.
+   Your link will look like `https://<name>.up.railway.app`. It's HTTPS, so offline mode works fully on phones.
+4. Open `https://<your-domain>/admin` to create your first game.
+
+Notes:
+- Keep the service at **1 replica**. The data is a single SQLite file on the volume; `railway.json` already sets this.
+- To recover a lost admin link, open a shell on the service with `railway ssh` (Railway CLI) and run
+  `python -m scavenger --list-games`. Links are printed with your Railway domain.
+- If no volume is attached, the deploy logs show a `WARNING: no Railway volume is attached` line.
+- Elsewhere with Docker: `docker build -t scavenger . && docker run -p 8000:8000 -v scavenger-data:/data scavenger`.
 
 ## Admin links: no passwords
 

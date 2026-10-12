@@ -238,7 +238,8 @@ class StoreTest(unittest.TestCase):
             self.assertEqual(len(set(keys)), 2)
             self.assertTrue(all(keys))
 
-    def test_offline_finds_keep_their_original_time(self):
+    @mock.patch("scavenger.store.time.time", side_effect=count(1000))
+    def test_offline_finds_keep_their_original_time(self, _clock):
         self.activate()
         ann = self.store.join(self.game["code"], "Ann")
         bob = self.store.join(self.game["code"], "Bob")
