@@ -17,6 +17,7 @@ CREATE TABLE IF NOT EXISTS games (
     name         TEXT NOT NULL,
     description  TEXT NOT NULL DEFAULT '',
     code         TEXT NOT NULL UNIQUE,
+    admin_key    TEXT NOT NULL UNIQUE,
     status       TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'active', 'ended')),
     auto_approve INTEGER NOT NULL DEFAULT 0,
     created_at   REAL NOT NULL
@@ -65,6 +66,7 @@ CREATE TABLE IF NOT EXISTS photos (
 MIGRATIONS = [
     ("games", "auto_approve", "INTEGER NOT NULL DEFAULT 0"),
     ("items", "kind", "TEXT NOT NULL DEFAULT 'answer'"),
+    ("games", "admin_key", "TEXT"),  # backfilled below
 ]
 
 STATUSES = ("draft", "active", "ended")
@@ -103,6 +105,11 @@ def photo_extension(data):
     if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
         return ".webp"
     return None
+
+
+def new_admin_key():
+    """The secret in a game's admin link; whoever has it can manage that game."""
+    return secrets.token_urlsafe(18)
 
 
 def _clean(value, field, max_len=200, required=True):
@@ -154,6 +161,9 @@ class Store:
             columns = {r["name"] for r in self.conn.execute(f"PRAGMA table_info({table})")}
             if column not in columns:
                 self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
+        for (game_id,) in self.conn.execute("SELECT id FROM games WHERE admin_key IS NULL").fetchall():
+            self.conn.execute("UPDATE games SET admin_key = ? WHERE id = ?", (new_admin_key(), game_id))
+        self.conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS games_admin_key ON games (admin_key)")
         self.conn.commit()
         self.photo_dir = Path(photo_dir or tempfile.mkdtemp(prefix="scavenger-photos-"))
         self.photo_dir.mkdir(parents=True, exist_ok=True)
@@ -212,8 +222,8 @@ class Store:
         description = _clean(description, "Description", 2000, required=False)
         with self.lock, self.conn:
             cur = self._q(
-                "INSERT INTO games (name, description, code, created_at) VALUES (?, ?, ?, ?)",
-                (name, description, self._new_code(), time.time()),
+                "INSERT INTO games (name, description, code, admin_key, created_at) VALUES (?, ?, ?, ?, ?)",
+                (name, description, self._new_code(), new_admin_key(), time.time()),
             )
             return self._game(cur.lastrowid)
 
@@ -233,6 +243,13 @@ class Store:
             if not row:
                 raise GameError("No game with that code", 404)
             return self._game_dict(row)
+
+    def game_by_admin_key(self, key):
+        with self.lock:
+            row = self._q("SELECT * FROM games WHERE admin_key = ?", (key or "",)).fetchone() if key else None
+        if not row:
+            raise GameError("This admin link isn't valid. The game may have been deleted.", 404)
+        return self._game_dict(row)
 
     def update_game(self, game_id, fields):
         updates = {}
@@ -303,8 +320,8 @@ class Store:
         ):
             raise GameError("Answer is required (letters or numbers) for text-answer items")
 
-    def _item(self, item_id):
-        row = self._q("SELECT * FROM items WHERE id = ?", (item_id,)).fetchone()
+    def _item(self, item_id, game_id):
+        row = self._q("SELECT * FROM items WHERE id = ? AND game_id = ?", (item_id, game_id)).fetchone()
         if not row:
             raise GameError("Item not found", 404)
         return dict(row)
@@ -330,20 +347,20 @@ class Store:
             cols = ", ".join(values)
             marks = ", ".join("?" for _ in values)
             cur = self._q(f"INSERT INTO items ({cols}) VALUES ({marks})", tuple(values.values()))
-            return self._item(cur.lastrowid)
+            return self._item(cur.lastrowid, game_id)
 
-    def update_item(self, item_id, fields):
+    def update_item(self, game_id, item_id, fields):
         values = self._item_fields(fields, partial=True)
         with self.lock, self.conn:
-            self._check_answer({**self._item(item_id), **values})
+            self._check_answer({**self._item(item_id, game_id), **values})
             if values:
                 assignments = ", ".join(f"{k} = ?" for k in values)
                 self._q(f"UPDATE items SET {assignments} WHERE id = ?", (*values.values(), item_id))
-            return self._item(item_id)
+            return self._item(item_id, game_id)
 
-    def delete_item(self, item_id):
+    def delete_item(self, game_id, item_id):
         with self.lock, self.conn:
-            self._item(item_id)
+            self._item(item_id, game_id)
             files = self._photo_files("ph.item_id = ?", (item_id,))
             self._q("DELETE FROM items WHERE id = ?", (item_id,))
         self._unlink(files)
@@ -374,10 +391,10 @@ class Store:
                 raise GameError("Your session has expired; please join again", 401)
             return dict(row)
 
-    def delete_player(self, player_id):
+    def delete_player(self, game_id, player_id):
         with self.lock, self.conn:
-            files = self._photo_files("p.id = ?", (player_id,))
-            if not self._q("DELETE FROM players WHERE id = ?", (player_id,)).rowcount:
+            files = self._photo_files("p.id = ? AND p.game_id = ?", (player_id, game_id))
+            if not self._q("DELETE FROM players WHERE id = ? AND game_id = ?", (player_id, game_id)).rowcount:
                 raise GameError("Player not found", 404)
         self._unlink(files)
 
@@ -473,11 +490,20 @@ class Store:
         self._unlink(r["filename"] for r in stale)
         return {"photo_id": cur.lastrowid, "status": status}
 
-    def review_photo(self, photo_id, status):
+    def _photo(self, photo_id):
+        return self._q(
+            """SELECT ph.*, p.game_id FROM photos ph JOIN players p ON p.id = ph.player_id
+               WHERE ph.id = ?""",
+            (photo_id,),
+        ).fetchone()
+
+    def review_photo(self, game_id, photo_id, status):
         if status not in ("approved", "rejected"):
             raise GameError("Status must be 'approved' or 'rejected'")
         with self.lock, self.conn:
-            photo = self._q("SELECT * FROM photos WHERE id = ?", (photo_id,)).fetchone()
+            photo = self._photo(photo_id)
+            if photo and photo["game_id"] != game_id:
+                photo = None
             if not photo:
                 raise GameError("Photo not found", 404)
             key = (photo["player_id"], photo["item_id"])
@@ -492,11 +518,15 @@ class Store:
                 self._q("DELETE FROM finds WHERE player_id = ? AND item_id = ?", key)
         return {"id": photo_id, "status": status}
 
-    def photo_file(self, photo_id, player=None):
-        """Path and content type of a photo; with `player`, only their own photos."""
+    def photo_file(self, photo_id, player=None, game_id=None):
+        """Path and content type of a photo, visible only to the player who took it
+        or to the admin of its game. One of `player` or `game_id` is required."""
+        if player is None and game_id is None:
+            raise ValueError("photo_file needs a player or a game_id")
         with self.lock:
-            photo = self._q("SELECT * FROM photos WHERE id = ?", (photo_id,)).fetchone()
-        if not photo or (player and photo["player_id"] != player["id"]):
+            photo = self._photo(photo_id)
+        if (not photo or (player is not None and photo["player_id"] != player["id"])
+                or (game_id is not None and photo["game_id"] != game_id)):
             raise GameError("Photo not found", 404)
         path = self.photo_dir / photo["filename"]
         if not path.is_file():

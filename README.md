@@ -7,11 +7,11 @@ It only needs Python 3.9+, with no third-party packages. Data is stored in a loc
 ## Run it
 
 ```bash
-SCAVENGER_ADMIN_PASSWORD='choose-a-password' python3 -m scavenger
+python3 -m scavenger
 ```
 
 - Players: <http://127.0.0.1:8000/>
-- Admin: <http://127.0.0.1:8000/admin>
+- Create and manage games: <http://127.0.0.1:8000/admin>
 
 Options (flags or environment variables):
 
@@ -22,13 +22,32 @@ Options (flags or environment variables):
 | `--db`   | `SCAVENGER_DB`             | `scavenger.db` |
 | `--photos` | `SCAVENGER_PHOTOS`       | `photos/`      |
 | `--cert`, `--key` | `SCAVENGER_CERT`, `SCAVENGER_KEY` | none. Serves HTTPS when given (see [Offline mode](#offline-mode)) |
-| —        | `SCAVENGER_ADMIN_PASSWORD` | `admin` (prints a warning) |
+| `--base-url` | `SCAVENGER_BASE_URL`   | `http://<host>:<port>`, used when printing links |
+| `--list-games` | —                    | Prints every game's admin link and exits |
 
 To let phones on the same network join, use `--host 0.0.0.0` and share `http://<your-ip>:8000/?code=XXXXXX`.
 
+## Admin links: no passwords
+
+There are no accounts or passwords. Anyone can open `/admin` and create a game. Each game gets two links:
+
+- **Player link**, `/?code=XXXXXX`: share this. Anyone with it, or with the 6-character code, can join and play.
+- **Admin link**, `/admin#<secret>`: keep this private. Anyone with it can manage *that one game*, and only that game.
+  To bring in a co-organizer, send them the admin link.
+
+The browser remembers the games you've created or opened under "Your games". If an admin link is lost,
+whoever runs the server can print every game's link:
+
+```bash
+python3 -m scavenger --list-games --base-url https://hunt.example.com
+```
+
+The secret sits after the `#`, so browsers never send it in page requests or `Referer` headers.
+The API receives it in an `X-Admin-Key` header, so it doesn't show up in server logs either.
+
 ## Admin tools
 
-- Create, rename and delete games. Each game gets a 6-character join code and a shareable player link.
+- Create, rename and delete games. Each game gets a 6-character join code, a shareable player link and a private admin link.
 - Set a game's status:
   - **Draft**: you can set it up, but players can't join.
   - **Active**: players can join and submit answers.
@@ -96,9 +115,11 @@ tests/          unit + HTTP API tests
 
 ## Notes and limitations
 
-- Photos are stored as files in the `--photos` folder and are only served to the player who took them and to admins.
+- Photos are stored as files in the `--photos` folder and are only served to the player who took them and to that game's admin link.
   They're deleted when their player, item or game is removed, or when the game is reset.
 - An offline find's time comes from the phone, so a player who tampers with requests could backdate an answer
   (never before they joined). This is fine for casual games; photo review limits it for photo items.
-- There is one shared admin password. Admin logins are kept in memory, so restarting the server logs admins out. Player sessions are stored in the database and survive a restart.
+- Anyone who can reach the server can create games, so on a public server someone could fill it with junk games.
+  Run it somewhere only your group can reach, or put it behind a proxy that limits requests.
+- Admin links don't expire. If one leaks, the only fix today is to delete the game and recreate it.
 - The built-in server is meant for small events on a trusted network. To run it on the public internet, put it behind HTTPS (for example, a reverse proxy).

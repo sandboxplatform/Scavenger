@@ -1,98 +1,122 @@
-const ADMIN_KEY = "scavenger.adminToken";
-let adminToken = storageGet(ADMIN_KEY);
+// Each game is managed through its secret admin key, carried in the page's #fragment
+// (never sent to the server in the URL) and in the X-Admin-Key header on API calls.
+const GAMES_KEY = "scavenger.myGames"; // [{key, name, code}] remembered in this browser
+let adminKey = null;
 let current = null; // admin view of the open game
 let pollTimer = null;
 
-const views = ["login-view", "list-view", "game-view"];
+const views = ["home-view", "game-view"];
 function show(id) {
   for (const v of views) $(v).classList.toggle("hidden", v !== id);
 }
 
-async function adminApi(method, path, body) {
-  try {
-    return await api(method, path, body, { "X-Admin-Token": adminToken || "" });
-  } catch (e) {
-    if (e.status === 401 && path !== "/api/admin/login") logout(false);
-    throw e;
-  }
+const adminHeaders = () => ({ "X-Admin-Key": adminKey || "" });
+const adminApi = (method, path, body) => api(method, path, body, adminHeaders());
+const adminLink = (key) => `${location.origin}/admin#${key}`;
+
+function myGames() {
+  try { return JSON.parse(storageGet(GAMES_KEY) || "[]"); } catch (_) { return []; }
+}
+function rememberGame(game) {
+  const rest = myGames().filter(g => g.key !== game.admin_key);
+  storageSet(GAMES_KEY, JSON.stringify([{ key: game.admin_key, name: game.name, code: game.code }, ...rest]));
+}
+function forgetGame(key) {
+  storageSet(GAMES_KEY, JSON.stringify(myGames().filter(g => g.key !== key)));
 }
 
-function logout(callServer = true) {
-  if (callServer && adminToken) adminApi("POST", "/api/admin/logout", {}).catch(() => {});
-  adminToken = null;
-  storageSet(ADMIN_KEY, null);
+// ----- home ------------------------------------------------------------------
+
+function showHome() {
   clearInterval(pollTimer);
   current = null;
-  history.replaceState(null, "", "/admin");
-  show("login-view");
-}
-
-// ----- game list -----------------------------------------------------------
-
-async function showList() {
-  clearInterval(pollTimer);
-  current = null;
-  history.replaceState(null, "", "/admin");
-  show("list-view");
-  let data;
-  try {
-    data = await adminApi("GET", "/api/admin/games");
-  } catch (e) {
-    return flash($("games"), e.message, "err");
-  }
-  if (!data.games.length) {
+  adminKey = null;
+  show("home-view");
+  const games = myGames();
+  if (!games.length) {
     return $("games").replaceChildren(el("p", { class: "muted" }, "No games yet — create one above."));
   }
-  $("games").replaceChildren(...data.games.map(g =>
+  $("games").replaceChildren(...games.map(g =>
     el("div", { class: "list-item row spread" },
       el("div", {},
-        el("button", { class: "link", onclick: () => openGame(g.id) }, g.name), " ",
-        el("span", { class: `badge ${g.status}` }, g.status),
-        el("div", { class: "small muted" },
-          `Code ${g.code} · ${g.item_count} item${g.item_count === 1 ? "" : "s"} · ${g.player_count} player${g.player_count === 1 ? "" : "s"}` +
-          (g.pending_photos ? ` · 📷 ${g.pending_photos} to review` : ""))),
-      el("button", { class: "secondary", onclick: () => openGame(g.id) }, "Manage"))));
+        el("a", { href: `#${g.key}` }, g.name),
+        el("div", { class: "small muted" }, `Code ${g.code}`)),
+      el("div", { class: "row" },
+        el("a", { href: `#${g.key}`, class: "button-look", style: "padding:6px 12px" }, "Manage"),
+        el("button", {
+          class: "link", title: "Remove from this list (the game itself is kept)",
+          onclick: () => {
+            if (!confirm(`Remove "${g.name}" from this list? The game keeps running; you'll need its admin link to open it again.`)) return;
+            forgetGame(g.key);
+            showHome();
+          },
+        }, "Forget")))));
 }
 
 $("create-form").addEventListener("submit", async (ev) => {
   ev.preventDefault();
   try {
-    const game = await adminApi("POST", "/api/admin/games", { name: $("new-name").value, description: $("new-desc").value });
+    const game = await api("POST", "/api/games", { name: $("new-name").value, description: $("new-desc").value });
     $("create-form").reset();
-    openGame(game.id);
+    rememberGame(game);
+    storageSet(`scavenger.unsaved.${game.admin_key}`, "1");
+    location.hash = game.admin_key;
   } catch (e) {
     flash($("create-msg"), e.message, "err");
   }
 });
 
+$("open-form").addEventListener("submit", (ev) => {
+  ev.preventDefault();
+  const text = $("open-link").value.trim();
+  const key = text.includes("#") ? text.slice(text.lastIndexOf("#") + 1) : text;
+  if (!/^[A-Za-z0-9_-]{16,}$/.test(key)) return flash($("open-msg"), "That doesn't look like an admin link.", "err");
+  $("open-form").reset();
+  location.hash = key;
+});
+
 // ----- single game ---------------------------------------------------------
 
-async function openGame(id) {
+async function openGame(key) {
+  adminKey = key;
+  clearInterval(pollTimer);
   try {
-    current = await adminApi("GET", `/api/admin/games/${id}`);
+    current = await adminApi("GET", "/api/manage");
   } catch (e) {
-    if (e.status === 404) return showList();
-    return flash($("game-msg"), e.message, "err");
+    show("home-view");
+    if (e.status === 404) forgetGame(key);
+    showHome();
+    return flash($("open-msg"), e.message, "err");
   }
-  history.replaceState(null, "", `/admin?game=${id}`);
+  rememberGame(current.game);
   show("game-view");
+  renderGame();
+  pollTimer = setInterval(refreshPlayers, 10000);
+}
+
+async function reloadGame() {
+  current = await adminApi("GET", "/api/manage");
+  renderGame();
+}
+
+function renderGame() {
   renderSettings();
   renderItems();
   renderPhotos();
   renderPlayers();
-  clearInterval(pollTimer);
-  pollTimer = setInterval(refreshPlayers, 10000);
 }
 
 async function refreshPlayers() {
   if (!current) return;
   try {
-    const fresh = await adminApi("GET", `/api/admin/games/${current.game.id}`);
+    const fresh = await adminApi("GET", "/api/manage");
     current.players = fresh.players;
     current.photos = fresh.photos;
     renderPhotos();
     renderPlayers();
-  } catch (_) {}
+  } catch (e) {
+    if (e.status === 404) route(); // game was deleted elsewhere
+  }
 }
 
 function renderSettings() {
@@ -101,19 +125,38 @@ function renderSettings() {
   const link = `${location.origin}/?code=${g.code}`;
   $("join-link").href = link;
   $("join-link").textContent = link;
+  $("admin-link").textContent = adminLink(g.admin_key);
+  $("save-link").classList.toggle("hidden", !storageGet(`scavenger.unsaved.${g.admin_key}`));
   $("g-name").value = g.name;
   $("g-desc").value = g.description;
   $("g-status").value = g.status;
   $("g-auto").checked = g.auto_approve;
 }
 
+$("dismiss-save").addEventListener("click", () => {
+  storageSet(`scavenger.unsaved.${adminKey}`, null);
+  $("save-link").classList.add("hidden");
+});
+
+document.querySelectorAll("[data-copy]").forEach(btn => btn.addEventListener("click", async () => {
+  const text = $(btn.dataset.copy).textContent;
+  try {
+    await navigator.clipboard.writeText(text);
+    btn.textContent = "Copied!";
+  } catch (_) {
+    window.prompt("Copy this link:", text);
+  }
+  setTimeout(() => { btn.textContent = "Copy"; }, 1500);
+}));
+
 $("game-form").addEventListener("submit", async (ev) => {
   ev.preventDefault();
   try {
-    current.game = await adminApi("PATCH", `/api/admin/games/${current.game.id}`, {
+    current.game = await adminApi("PATCH", "/api/manage", {
       name: $("g-name").value, description: $("g-desc").value, status: $("g-status").value,
       auto_approve: $("g-auto").checked,
     });
+    rememberGame(current.game);
     renderSettings();
     flash($("game-msg"), "Settings saved.");
   } catch (e) {
@@ -124,8 +167,8 @@ $("game-form").addEventListener("submit", async (ev) => {
 $("reset-btn").addEventListener("click", async () => {
   if (!confirm("Remove ALL players and their progress from this game? Items are kept.")) return;
   try {
-    await adminApi("POST", `/api/admin/games/${current.game.id}/reset`, {});
-    await openGame(current.game.id);
+    await adminApi("POST", "/api/manage/reset", {});
+    await reloadGame();
     flash($("game-msg"), "All players removed.");
   } catch (e) {
     flash($("game-msg"), e.message, "err");
@@ -133,10 +176,12 @@ $("reset-btn").addEventListener("click", async () => {
 });
 
 $("delete-btn").addEventListener("click", async () => {
-  if (!confirm(`Permanently delete "${current.game.name}" with all its items and players?`)) return;
+  if (!confirm(`Permanently delete "${current.game.name}" with all its items, players and photos?`)) return;
   try {
-    await adminApi("DELETE", `/api/admin/games/${current.game.id}`);
-    showList();
+    await adminApi("DELETE", "/api/manage");
+    forgetGame(adminKey);
+    storageSet(`scavenger.unsaved.${adminKey}`, null);
+    location.hash = "";
   } catch (e) {
     flash($("game-msg"), e.message, "err");
   }
@@ -172,11 +217,11 @@ function itemEditor(item, idx) {
     onsubmit: async (ev) => {
       ev.preventDefault();
       try {
-        await adminApi("PATCH", `/api/admin/items/${item.id}`, {
+        await adminApi("PATCH", `/api/manage/items/${item.id}`, {
           title: f.title.value, clue: f.clue.value, kind: f.kind.value, answer: f.answer.value,
           points: Number(f.points.value), position: Number(f.position.value),
         });
-        await openGame(current.game.id);
+        await reloadGame();
         flash($("game-msg"), "Item saved.");
       } catch (e) {
         flash(msg, e.message, "err");
@@ -197,8 +242,8 @@ function itemEditor(item, idx) {
         onclick: async () => {
           if (!confirm(`Delete item "${item.title}"? Players lose points for it.`)) return;
           try {
-            await adminApi("DELETE", `/api/admin/items/${item.id}`);
-            await openGame(current.game.id);
+            await adminApi("DELETE", `/api/manage/items/${item.id}`);
+            await reloadGame();
           } catch (e) {
             flash(msg, e.message, "err");
           }
@@ -220,13 +265,13 @@ function itemEditor(item, idx) {
 $("item-form").addEventListener("submit", async (ev) => {
   ev.preventDefault();
   try {
-    await adminApi("POST", `/api/admin/games/${current.game.id}/items`, {
+    await adminApi("POST", "/api/manage/items", {
       title: $("i-title").value, clue: $("i-clue").value, kind: $("i-kind").value,
       answer: $("i-answer").value, points: Number($("i-points").value),
     });
     $("item-form").reset();
     syncNewItemKind();
-    await openGame(current.game.id);
+    await reloadGame();
     flash($("item-msg"), "Item added.");
   } catch (e) {
     flash($("item-msg"), e.message, "err");
@@ -262,7 +307,7 @@ function renderPlayers() {
       onclick: async () => {
         if (!confirm(`Remove ${p.name} from the game?`)) return;
         try {
-          await adminApi("DELETE", `/api/admin/players/${p.id}`);
+          await adminApi("DELETE", `/api/manage/players/${p.id}`);
           refreshPlayers();
         } catch (e) {
           flash($("game-msg"), e.message, "err");
@@ -281,11 +326,11 @@ function renderPhotos() {
     return $("photos").replaceChildren(el("p", { class: "muted" },
       filter === "pending" ? "No photos waiting for review." : "No photos submitted yet."));
   }
-  const headers = { "X-Admin-Token": adminToken || "" };
+  const headers = adminHeaders();
   $("photos").replaceChildren(el("div", { class: "photo-grid" }, ...photos.map(ph => {
     const review = (status) => async () => {
       try {
-        await adminApi("POST", `/api/admin/photos/${ph.id}/review`, { status });
+        await adminApi("POST", `/api/manage/photos/${ph.id}/review`, { status });
         await refreshPlayers();
       } catch (e) {
         flash($("game-msg"), e.message, "err");
@@ -294,8 +339,8 @@ function renderPhotos() {
     return el("div", { class: `photo-card ${ph.status}` },
       el("a", { href: "#", onclick: async (ev) => {
         ev.preventDefault();
-        window.open(await imageUrl(`/api/admin/photos/${ph.id}`, headers), "_blank");
-      } }, lazyImage(`/api/admin/photos/${ph.id}`, headers, `${ph.player_name}: ${ph.item_title}`)),
+        window.open(await imageUrl(`/api/manage/photos/${ph.id}`, headers), "_blank");
+      } }, lazyImage(`/api/manage/photos/${ph.id}`, headers, `${ph.player_name}: ${ph.item_title}`)),
       el("strong", {}, ph.player_name),
       el("div", { class: "small" }, ph.item_title),
       el("div", { class: "small muted" }, `Taken ${formatTime(ph.captured_at)}`),
@@ -316,27 +361,13 @@ syncNewItemKind();
 $("photo-filter").addEventListener("change", renderPhotos);
 
 $("refresh-btn").addEventListener("click", refreshPlayers);
-$("back-btn").addEventListener("click", showList);
-document.querySelectorAll("[data-logout]").forEach(b => b.addEventListener("click", () => logout()));
-
-$("login-form").addEventListener("submit", async (ev) => {
-  ev.preventDefault();
-  try {
-    const res = await adminApi("POST", "/api/admin/login", { password: $("password").value });
-    adminToken = res.token;
-    storageSet(ADMIN_KEY, adminToken);
-    $("login-form").reset();
-    showList();
-  } catch (e) {
-    flash($("login-msg"), e.message, "err");
-  }
-});
+$("back-btn").addEventListener("click", () => { location.hash = ""; });
 
 // ----- start -----------------------------------------------------------------
 
-if (!adminToken) {
-  show("login-view");
-} else {
-  const gameId = new URLSearchParams(location.search).get("game");
-  if (gameId) openGame(gameId); else showList();
+function route() {
+  const key = location.hash.slice(1);
+  if (key) openGame(key); else showHome();
 }
+window.addEventListener("hashchange", route);
+route();

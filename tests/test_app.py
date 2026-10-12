@@ -113,7 +113,7 @@ class StoreTest(unittest.TestCase):
         with self.assertRaises(GameError):
             self.store.add_item(self.game["id"], {"title": "T", "answer": "a", "points": -1})
         with self.assertRaises(GameError):
-            self.store.update_item(self.oak["id"], {"answer": "?!"})
+            self.store.update_item(self.game["id"], self.oak["id"], {"answer": "?!"})
 
 
     def photo_files(self):
@@ -123,7 +123,7 @@ class StoreTest(unittest.TestCase):
         item = self.store.add_item(self.game["id"], {"title": "Selfie", "kind": "photo"})
         self.assertEqual(item["kind"], "photo")
         with self.assertRaises(GameError):
-            self.store.update_item(item["id"], {"kind": "answer"})
+            self.store.update_item(self.game["id"], item["id"], {"kind": "answer"})
         with self.assertRaises(GameError):
             self.store.add_item(self.game["id"], {"title": "T", "kind": "video"})
 
@@ -150,11 +150,11 @@ class StoreTest(unittest.TestCase):
         self.assertEqual(view["score"], 0)
 
         with self.assertRaises(GameError):
-            self.store.photo_file(first["photo_id"])
+            self.store.photo_file(first["photo_id"], game_id=self.game["id"])
         path, ctype = self.store.photo_file(second["photo_id"], player=ann)
         self.assertEqual((path.read_bytes(), ctype), (PNG, "image/png"))
 
-        self.store.review_photo(second["photo_id"], "approved")
+        self.store.review_photo(self.game["id"], second["photo_id"], "approved")
         view = self.store.player_view(ann)
         self.assertEqual(view["score"], 5)
         admin = self.store.admin_view(self.game["id"])
@@ -164,7 +164,7 @@ class StoreTest(unittest.TestCase):
             self.store.submit_photo(ann, item["id"], JPEG)
         self.assertEqual(ctx.exception.status, 409)
 
-        self.store.review_photo(second["photo_id"], "rejected")
+        self.store.review_photo(self.game["id"], second["photo_id"], "rejected")
         self.assertEqual(self.store.player_view(ann)["score"], 0)
         self.assertEqual(self.store.player_view(ann)["items"][2]["photo"]["status"], "rejected")
 
@@ -191,10 +191,52 @@ class StoreTest(unittest.TestCase):
         bob = self.store.join(self.game["code"], "Bob")
         self.store.submit_photo(ann, item["id"], JPEG)
         self.store.submit_photo(bob, item["id"], JPEG)
-        self.store.delete_player(ann["id"])
+        self.store.delete_player(self.game["id"], ann["id"])
         self.assertEqual(len(self.photo_files()), 1)
         self.store.reset_game(self.game["id"])
         self.assertEqual(self.photo_files(), [])
+
+    def test_admin_actions_are_limited_to_their_own_game(self):
+        other = self.store.create_game("Other")
+        self.assertNotEqual(other["admin_key"], self.game["admin_key"])
+        self.assertEqual(self.store.game_by_admin_key(self.game["admin_key"])["id"], self.game["id"])
+        for bad in ("", None, "nope"):
+            with self.assertRaises(GameError):
+                self.store.game_by_admin_key(bad)
+        item = self.store.add_item(self.game["id"], {"title": "Duck", "kind": "photo"})
+        self.activate()
+        ann = self.store.join(self.game["code"], "Ann")
+        photo = self.store.submit_photo(ann, item["id"], JPEG)
+        for action in (
+            lambda: self.store.update_item(other["id"], item["id"], {"title": "Hijacked"}),
+            lambda: self.store.delete_item(other["id"], item["id"]),
+            lambda: self.store.delete_player(other["id"], ann["id"]),
+            lambda: self.store.review_photo(other["id"], photo["photo_id"], "approved"),
+            lambda: self.store.photo_file(photo["photo_id"], game_id=other["id"]),
+        ):
+            with self.assertRaises(GameError) as ctx:
+                action()
+            self.assertEqual(ctx.exception.status, 404)
+        self.assertEqual(self.store.player_view(ann)["score"], 0)
+
+    def test_old_databases_get_admin_keys(self):
+        import sqlite3
+        with tempfile.TemporaryDirectory() as tmp:
+            path = f"{tmp}/old.db"
+            conn = sqlite3.connect(path)
+            conn.executescript("""
+                CREATE TABLE games (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL,
+                    description TEXT NOT NULL DEFAULT '', code TEXT NOT NULL UNIQUE,
+                    status TEXT NOT NULL DEFAULT 'draft', created_at REAL NOT NULL);
+                INSERT INTO games (name, code, created_at) VALUES ('A', 'AAAAAA', 0), ('B', 'BBBBBB', 0);
+            """)
+            conn.commit()
+            conn.close()
+            store = Store(path, f"{tmp}/photos")
+            keys = [g["admin_key"] for g in store.list_games()]
+            store.close()
+            self.assertEqual(len(set(keys)), 2)
+            self.assertTrue(all(keys))
 
     def test_offline_finds_keep_their_original_time(self):
         self.activate()
@@ -219,7 +261,7 @@ class HttpTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.photos = tempfile.TemporaryDirectory()
-        cls.server = make_server("127.0.0.1", 0, ":memory:", "secret", quiet=True, photo_dir=cls.photos.name)
+        cls.server = make_server("127.0.0.1", 0, ":memory:", quiet=True, photo_dir=cls.photos.name)
         cls.base = f"http://127.0.0.1:{cls.server.server_address[1]}"
         threading.Thread(target=cls.server.serve_forever, daemon=True).start()
 
@@ -245,25 +287,36 @@ class HttpTest(unittest.TestCase):
         except urllib.error.HTTPError as e:
             return e.code, json.loads(e.read())
 
-    def admin(self):
-        status, body = self.call("POST", "/api/admin/login", {"password": "secret"})
+    def create(self, name):
+        """Create a game; returns it plus the header that manages it."""
+        status, game = self.call("POST", "/api/games", {"name": name})
         self.assertEqual(status, 200)
-        return {"X-Admin-Token": body["token"]}
+        return game, {"X-Admin-Key": game["admin_key"]}
 
-    def test_admin_endpoints_require_login(self):
-        self.assertEqual(self.call("GET", "/api/admin/games")[0], 401)
-        self.assertEqual(self.call("GET", "/api/admin/games", headers={"X-Admin-Token": "nope"})[0], 401)
-        self.assertEqual(self.call("POST", "/api/admin/login", {"password": "wrong"})[0], 401)
+    def test_admin_endpoints_need_the_games_key(self):
+        game, admin = self.create("Mine")
+        _, other = self.create("Someone else's")
+        self.assertEqual(self.call("GET", "/api/manage")[0], 404)
+        self.assertEqual(self.call("GET", "/api/manage", headers={"X-Admin-Key": "nope"})[0], 404)
+        self.assertEqual(self.call("GET", "/api/manage", headers=admin)[1]["game"]["name"], "Mine")
+        _, item = self.call("POST", "/api/manage/items", {"title": "T", "answer": "a"}, admin)
+        self.assertEqual(self.call("DELETE", f"/api/manage/items/{item['id']}", headers=other)[0], 404)
+        self.assertEqual(self.call("DELETE", f"/api/manage/items/{item['id']}", headers=admin)[0], 200)
+
+    def test_players_never_see_the_admin_key(self):
+        game, admin = self.create("Secret")
+        self.call("PATCH", "/api/manage", {"status": "active"}, admin)
+        token = self.call("POST", "/api/join", {"code": game["code"], "name": "Ann"})[1]["token"]
+        for path, headers in (("/api/play", {"X-Player-Token": token}), (f"/api/leaderboard?code={game['code']}", {})):
+            self.assertNotIn(game["admin_key"], json.dumps(self.call("GET", path, headers=headers)[1]))
 
     def test_full_game_flow(self):
-        admin = self.admin()
-        _, game = self.call("POST", "/api/admin/games", {"name": "Office hunt"}, admin)
-        gid = game["id"]
-        _, item = self.call("POST", f"/api/admin/games/{gid}/items",
+        game, admin = self.create("Office hunt")
+        _, item = self.call("POST", "/api/manage/items",
                             {"title": "Mug", "clue": "Coffee lives here", "answer": "kitchen", "points": 3}, admin)
 
         self.assertEqual(self.call("POST", "/api/join", {"code": game["code"], "name": "Ann"})[0], 403)
-        self.call("PATCH", f"/api/admin/games/{gid}", {"status": "active"}, admin)
+        self.call("PATCH", "/api/manage", {"status": "active"}, admin)
         status, joined = self.call("POST", "/api/join", {"code": game["code"], "name": "Ann"})
         self.assertEqual(status, 200)
         player = {"X-Player-Token": joined["token"]}
@@ -279,19 +332,19 @@ class HttpTest(unittest.TestCase):
         _, board = self.call("GET", f"/api/leaderboard?code={game['code']}")
         self.assertEqual(board["players"], [{"name": "Ann", "score": 3, "found": 1}])
 
-        _, detail = self.call("GET", f"/api/admin/games/{gid}", headers=admin)
+        _, detail = self.call("GET", "/api/manage", headers=admin)
         self.assertEqual(detail["players"][0]["found_items"], [item["id"]])
 
-        self.assertEqual(self.call("DELETE", f"/api/admin/players/{detail['players'][0]['id']}", headers=admin)[0], 200)
+        self.assertEqual(self.call("DELETE", f"/api/manage/players/{detail['players'][0]['id']}", headers=admin)[0], 200)
         self.assertEqual(self.call("GET", "/api/play", headers=player)[0], 401)
-        self.assertEqual(self.call("DELETE", f"/api/admin/games/{gid}", headers=admin)[0], 200)
+        self.assertEqual(self.call("DELETE", "/api/manage", headers=admin)[0], 200)
+        self.assertEqual(self.call("GET", "/api/manage", headers=admin)[0], 404)
 
     def test_photo_upload_and_review(self):
-        admin = self.admin()
-        _, game = self.call("POST", "/api/admin/games", {"name": "Photo hunt"}, admin)
-        _, item = self.call("POST", f"/api/admin/games/{game['id']}/items",
+        game, admin = self.create("Photo hunt")
+        _, item = self.call("POST", "/api/manage/items",
                             {"title": "Duck", "kind": "photo", "points": 4}, admin)
-        self.call("PATCH", f"/api/admin/games/{game['id']}", {"status": "active"}, admin)
+        self.call("PATCH", "/api/manage", {"status": "active"}, admin)
         ann = {"X-Player-Token": self.call("POST", "/api/join", {"code": game["code"], "name": "Ann"})[1]["token"]}
         bob = {"X-Player-Token": self.call("POST", "/api/join", {"code": game["code"], "name": "Bob"})[1]["token"]}
 
@@ -303,20 +356,19 @@ class HttpTest(unittest.TestCase):
 
         self.assertEqual(self.call("GET", f"/api/play/photos/{photo_id}", headers=ann, raw=True), (200, JPEG))
         self.assertEqual(self.call("GET", f"/api/play/photos/{photo_id}", headers=bob)[0], 404)
-        self.assertEqual(self.call("GET", f"/api/admin/photos/{photo_id}", headers=admin, raw=True), (200, JPEG))
-        self.assertEqual(self.call("GET", f"/api/admin/photos/{photo_id}")[0], 401)
+        self.assertEqual(self.call("GET", f"/api/manage/photos/{photo_id}", headers=admin, raw=True), (200, JPEG))
+        self.assertEqual(self.call("GET", f"/api/manage/photos/{photo_id}")[0], 404)
 
-        _, detail = self.call("GET", f"/api/admin/games/{game['id']}", headers=admin)
+        _, detail = self.call("GET", "/api/manage", headers=admin)
         self.assertEqual(detail["players"][0]["pending_items"], [item["id"]])
-        self.assertEqual(self.call("POST", f"/api/admin/photos/{photo_id}/review", {"status": "approved"}, admin)[0], 200)
+        self.assertEqual(self.call("POST", f"/api/manage/photos/{photo_id}/review", {"status": "approved"}, admin)[0], 200)
         _, board = self.call("GET", f"/api/leaderboard?code={game['code']}")
         self.assertEqual(board["players"][0], {"name": "Ann", "score": 4, "found": 1})
 
     def test_bad_requests(self):
-        admin = self.admin()
-        self.assertEqual(self.call("PATCH", "/api/admin/games/999", {"status": "active"}, admin)[0], 404)
-        _, game = self.call("POST", "/api/admin/games", {"name": "G"}, admin)
-        self.assertEqual(self.call("PATCH", f"/api/admin/games/{game['id']}", {"status": "paused"}, admin)[0], 400)
+        game, admin = self.create("G")
+        self.assertEqual(self.call("PATCH", "/api/manage", {"status": "paused"}, admin)[0], 400)
+        self.assertEqual(self.call("POST", "/api/games", {"name": ""})[0], 400)
         self.assertEqual(self.call("GET", "/api/join")[0], 405)
         self.assertEqual(self.call("GET", "/api/nothing")[0], 404)
 

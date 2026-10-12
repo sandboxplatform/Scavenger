@@ -3,11 +3,9 @@
 Run with `python -m scavenger` (see README.md for options).
 """
 
-import hmac
 import json
 import mimetypes
 import re
-import secrets
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -24,6 +22,7 @@ ROUTES = []
 
 def route(method, pattern, admin=False, raw=False):
     """Register a handler for METHOD + path regex; named groups become int kwargs.
+    With admin=True the handler also gets the `game` that the X-Admin-Key header unlocks.
     With raw=True the handler gets the request body as bytes instead of parsed JSON."""
 
     def wrap(fn):
@@ -40,14 +39,8 @@ class FileResponse:
 
 
 class App:
-    def __init__(self, store, admin_password):
+    def __init__(self, store):
         self.store = store
-        self.admin_password = admin_password
-        self.admin_tokens = set()
-
-    def check_admin(self, token):
-        if not token or not any(hmac.compare_digest(token, t) for t in self.admin_tokens):
-            raise GameError("Admin login required", 401)
 
 
 # ----- player API ----------------------------------------------------------
@@ -102,88 +95,67 @@ def leaderboard(app, req, body):
     }
 
 
-# ----- admin API -----------------------------------------------------------
+# ----- game admin API --------------------------------------------------------
+# There are no accounts: creating a game returns a secret admin key, and whoever
+# holds it (sent as the X-Admin-Key header) can manage that one game.
 
 
-@route("POST", "/api/admin/login")
-def admin_login(app, req, body):
-    password = body.get("password")
-    if not isinstance(password, str) or not hmac.compare_digest(
-        password.encode(), app.admin_password.encode()
-    ):
-        raise GameError("Wrong password", 401)
-    token = secrets.token_urlsafe(24)
-    app.admin_tokens.add(token)
-    return {"token": token}
-
-
-@route("POST", "/api/admin/logout", admin=True)
-def admin_logout(app, req, body):
-    app.admin_tokens.discard(req.headers.get("X-Admin-Token"))
-    return {"ok": True}
-
-
-@route("GET", "/api/admin/games", admin=True)
-def list_games(app, req, body):
-    return {"games": app.store.list_games()}
-
-
-@route("POST", "/api/admin/games", admin=True)
+@route("POST", "/api/games")
 def create_game(app, req, body):
     return app.store.create_game(body.get("name"), body.get("description", ""))
 
 
-@route("GET", r"/api/admin/games/(?P<game_id>\d+)", admin=True)
-def get_game(app, req, body, game_id):
-    return app.store.admin_view(game_id)
+@route("GET", "/api/manage", admin=True)
+def get_game(app, req, body, game):
+    return app.store.admin_view(game["id"])
 
 
-@route("PATCH", r"/api/admin/games/(?P<game_id>\d+)", admin=True)
-def update_game(app, req, body, game_id):
-    return app.store.update_game(game_id, body)
+@route("PATCH", "/api/manage", admin=True)
+def update_game(app, req, body, game):
+    return app.store.update_game(game["id"], body)
 
 
-@route("DELETE", r"/api/admin/games/(?P<game_id>\d+)", admin=True)
-def delete_game(app, req, body, game_id):
-    app.store.delete_game(game_id)
+@route("DELETE", "/api/manage", admin=True)
+def delete_game(app, req, body, game):
+    app.store.delete_game(game["id"])
     return {"ok": True}
 
 
-@route("POST", r"/api/admin/games/(?P<game_id>\d+)/reset", admin=True)
-def reset_game(app, req, body, game_id):
-    app.store.reset_game(game_id)
+@route("POST", "/api/manage/reset", admin=True)
+def reset_game(app, req, body, game):
+    app.store.reset_game(game["id"])
     return {"ok": True}
 
 
-@route("POST", r"/api/admin/games/(?P<game_id>\d+)/items", admin=True)
-def add_item(app, req, body, game_id):
-    return app.store.add_item(game_id, body)
+@route("POST", "/api/manage/items", admin=True)
+def add_item(app, req, body, game):
+    return app.store.add_item(game["id"], body)
 
 
-@route("PATCH", r"/api/admin/items/(?P<item_id>\d+)", admin=True)
-def update_item(app, req, body, item_id):
-    return app.store.update_item(item_id, body)
+@route("PATCH", r"/api/manage/items/(?P<item_id>\d+)", admin=True)
+def update_item(app, req, body, game, item_id):
+    return app.store.update_item(game["id"], item_id, body)
 
 
-@route("DELETE", r"/api/admin/items/(?P<item_id>\d+)", admin=True)
-def delete_item(app, req, body, item_id):
-    app.store.delete_item(item_id)
+@route("DELETE", r"/api/manage/items/(?P<item_id>\d+)", admin=True)
+def delete_item(app, req, body, game, item_id):
+    app.store.delete_item(game["id"], item_id)
     return {"ok": True}
 
 
-@route("GET", r"/api/admin/photos/(?P<photo_id>\d+)", admin=True)
-def admin_photo(app, req, body, photo_id):
-    return FileResponse(*app.store.photo_file(photo_id))
+@route("GET", r"/api/manage/photos/(?P<photo_id>\d+)", admin=True)
+def admin_photo(app, req, body, game, photo_id):
+    return FileResponse(*app.store.photo_file(photo_id, game_id=game["id"]))
 
 
-@route("POST", r"/api/admin/photos/(?P<photo_id>\d+)/review", admin=True)
-def review_photo(app, req, body, photo_id):
-    return app.store.review_photo(photo_id, body.get("status"))
+@route("POST", r"/api/manage/photos/(?P<photo_id>\d+)/review", admin=True)
+def review_photo(app, req, body, game, photo_id):
+    return app.store.review_photo(game["id"], photo_id, body.get("status"))
 
 
-@route("DELETE", r"/api/admin/players/(?P<player_id>\d+)", admin=True)
-def delete_player(app, req, body, player_id):
-    app.store.delete_player(player_id)
+@route("DELETE", r"/api/manage/players/(?P<player_id>\d+)", admin=True)
+def delete_player(app, req, body, game, player_id):
+    app.store.delete_player(game["id"], player_id)
     return {"ok": True}
 
 
@@ -229,10 +201,10 @@ class Handler(BaseHTTPRequestHandler):
                 path_matched = True
                 if m != method:
                     continue
-                if admin:
-                    self.app.check_admin(self.headers.get("X-Admin-Token"))
-                body = self.read_body(raw) if method in ("POST", "PATCH") else {}
                 kwargs = {k: int(v) for k, v in match.groupdict().items()}
+                if admin:
+                    kwargs["game"] = self.app.store.game_by_admin_key(self.headers.get("X-Admin-Key"))
+                body = self.read_body(raw) if method in ("POST", "PATCH") else {}
                 result = fn(self.app, self, body, **kwargs)
                 if isinstance(result, FileResponse):
                     return self.send_file(result.path, result.content_type, private=True)
@@ -291,8 +263,8 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
 
-def make_server(host, port, db_path, admin_password, quiet=False, photo_dir=None, ssl_context=None):
-    app = App(Store(db_path, photo_dir), admin_password)
+def make_server(host, port, db_path, quiet=False, photo_dir=None, ssl_context=None):
+    app = App(Store(db_path, photo_dir))
     handler = type("BoundHandler", (Handler,), {"app": app})
     server = ThreadingHTTPServer((host, port), handler)
     if ssl_context:

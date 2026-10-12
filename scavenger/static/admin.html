@@ -4,29 +4,15 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Scavenger Admin</title>
+  <meta name="referrer" content="no-referrer">
   <link rel="stylesheet" href="/style.css">
 </head>
 <body>
 <main>
-  <!-- Login -->
-  <section id="login-view" class="hidden">
-    <h1>Scavenger Admin</h1>
-    <form id="login-form" class="card stack">
-      <div>
-        <label for="password">Admin password</label>
-        <input id="password" type="password" required autocomplete="current-password">
-      </div>
-      <button type="submit">Log in</button>
-      <div id="login-msg"></div>
-    </form>
-  </section>
-
-  <!-- Game list -->
-  <section id="list-view" class="hidden">
-    <div class="row spread">
-      <h1>Games</h1>
-      <button class="secondary" data-logout>Log out</button>
-    </div>
+  <!-- Home: create a game, or open one this browser has managed -->
+  <section id="home-view" class="hidden">
+    <h1>Scavenger Hunt</h1>
+    <p class="muted">Set up a hunt in a minute. No account needed — you'll get a private admin link for your game.</p>
     <form id="create-form" class="card stack">
       <h2>New game</h2>
       <div><label for="new-name">Name</label><input id="new-name" maxlength="100" required></div>
@@ -34,14 +20,29 @@
       <button type="submit">Create game</button>
       <div id="create-msg"></div>
     </form>
-    <div id="games" class="card"></div>
+    <div class="card">
+      <h2>Your games</h2>
+      <p class="small muted">Games you've created or opened in this browser.</p>
+      <div id="games"></div>
+    </div>
+    <form id="open-form" class="card stack">
+      <h2>Open a game</h2>
+      <div><label for="open-link">Paste an admin link</label><input id="open-link" required autocomplete="off" placeholder="https://…/admin#…"></div>
+      <button type="submit" class="secondary">Open</button>
+      <div id="open-msg"></div>
+    </form>
   </section>
 
   <!-- Single game -->
   <section id="game-view" class="hidden">
     <div class="row spread">
-      <button class="link" id="back-btn">← All games</button>
-      <button class="secondary" data-logout>Log out</button>
+      <button class="link" id="back-btn">← Your games</button>
+    </div>
+    <div id="save-link" class="card hidden" style="border-color: var(--warn)">
+      <h2>Save your admin link</h2>
+      <p>This link is the only way to manage this game, and anyone who has it can change it. Keep it private — bookmark it or send it to yourself.
+        Players use the code or player link below instead.</p>
+      <button type="button" class="secondary" id="dismiss-save">I've saved it</button>
     </div>
     <div id="game-msg"></div>
 
@@ -50,7 +51,18 @@
         <h2 style="margin:0">Game settings</h2>
         <span>Code: <span id="game-code" class="code"></span></span>
       </div>
-      <p class="small muted">Player link: <a id="join-link" target="_blank" rel="noopener"></a></p>
+      <div class="small">
+        <div class="row" style="margin-bottom:6px">
+          <span class="muted">Player link (share this):</span>
+          <a id="join-link" target="_blank" rel="noopener" style="word-break:break-all"></a>
+          <button type="button" class="link" data-copy="join-link">Copy</button>
+        </div>
+        <div class="row">
+          <span class="muted">Admin link (keep private):</span>
+          <code id="admin-link" style="word-break:break-all"></code>
+          <button type="button" class="link" data-copy="admin-link">Copy</button>
+        </div>
+      </div>
       <div><label for="g-name">Name</label><input id="g-name" maxlength="100" required></div>
       <div><label for="g-desc">Description</label><textarea id="g-desc" maxlength="2000"></textarea></div>
       <div>
