@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Scavenger Hunt</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<main>
+  <div id="banner" class="banner hidden" role="status" aria-live="polite"></div>
+
+  <!-- Join screen -->
+  <section id="join-view">
+    <h1>Scavenger Hunt</h1>
+    <p class="muted">Enter the game code from your organizer to start hunting.</p>
+    <form id="join-form" class="card stack">
+      <div>
+        <label for="join-code">Game code</label>
+        <input id="join-code" class="code" autocomplete="off" maxlength="6" required>
+      </div>
+      <div>
+        <label for="join-name">Your name or team name</label>
+        <input id="join-name" maxlength="40" required>
+      </div>
+      <button type="submit">Join game</button>
+      <div id="join-msg"></div>
+    </form>
+  </section>
+
+  <!-- Game screen -->
+  <section id="game-view" class="hidden">
+    <div class="row spread">
+      <div>
+        <h1 id="game-name"></h1>
+        <p class="muted small">Playing as <strong id="player-name"></strong> · <span id="game-status" class="badge"></span></p>
+      </div>
+      <button id="leave-btn" class="secondary">Leave</button>
+    </div>
+    <p id="game-desc" style="margin-top:12px; white-space:pre-wrap"></p>
+
+    <div class="card">
+      <div class="row spread">
+        <strong>Score: <span id="score">0</span></strong>
+        <span class="muted small"><span id="found-count">0</span> of <span id="item-count">0</span> found</span>
+      </div>
+      <div class="progress" style="margin-top:8px"><div id="progress-bar" style="width:0%"></div></div>
+    </div>
+
+    <div id="ended-msg" class="flash ok hidden">This game has ended. Thanks for playing!</div>
+    <div id="items"></div>
+
+    <div class="card">
+      <div class="row spread">
+        <h2>Leaderboard</h2>
+        <button id="refresh-btn" class="link">Refresh</button>
+      </div>
+      <p id="board-note" class="muted small"></p>
+      <div class="table-wrap"><table id="leaderboard"></table></div>
+    </div>
+  </section>
+</main>
+
+<script src="/common.js"></script>
+<script src="/offline.js"></script>
+<script src="/player.js"></script>
+</body>
+</html>

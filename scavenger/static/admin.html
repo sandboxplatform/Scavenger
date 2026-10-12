@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Scavenger Admin</title>
+  <meta name="referrer" content="no-referrer">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<main>
+  <!-- Home: create a game, or open one this browser has managed -->
+  <section id="home-view" class="hidden">
+    <h1>Scavenger Hunt</h1>
+    <p class="muted">Set up a hunt in a minute. No account needed — you'll get a private admin link for your game.</p>
+    <form id="create-form" class="card stack">
+      <h2>New game</h2>
+      <div><label for="new-name">Name</label><input id="new-name" maxlength="100" required></div>
+      <div><label for="new-desc">Description (shown to players)</label><textarea id="new-desc" maxlength="2000"></textarea></div>
+      <button type="submit">Create game</button>
+      <div id="create-msg"></div>
+    </form>
+    <div class="card">
+      <h2>Your games</h2>
+      <p class="small muted">Games you've created or opened in this browser.</p>
+      <div id="games"></div>
+    </div>
+    <form id="open-form" class="card stack">
+      <h2>Open a game</h2>
+      <div><label for="open-link">Paste an admin link</label><input id="open-link" required autocomplete="off" placeholder="https://…/admin#…"></div>
+      <button type="submit" class="secondary">Open</button>
+      <div id="open-msg"></div>
+    </form>
+  </section>
+
+  <!-- Single game -->
+  <section id="game-view" class="hidden">
+    <div class="row spread">
+      <button class="link" id="back-btn">← Your games</button>
+    </div>
+    <div id="save-link" class="card hidden" style="border-color: var(--warn)">
+      <h2>Save your admin link</h2>
+      <p>This link is the only way to manage this game, and anyone who has it can change it. Keep it private — bookmark it or send it to yourself.
+        Players use the code or player link below instead.</p>
+      <button type="button" class="secondary" id="dismiss-save">I've saved it</button>
+    </div>
+    <div id="game-msg"></div>
+
+    <form id="game-form" class="card stack">
+      <div class="row spread">
+        <h2 style="margin:0">Game settings</h2>
+        <span>Code: <span id="game-code" class="code"></span></span>
+      </div>
+      <div class="small">
+        <div class="row" style="margin-bottom:6px">
+          <span class="muted">Player link (share this):</span>
+          <a id="join-link" target="_blank" rel="noopener" style="word-break:break-all"></a>
+          <button type="button" class="link" data-copy="join-link">Copy</button>
+        </div>
+        <div class="row">
+          <span class="muted">Admin link (keep private):</span>
+          <code id="admin-link" style="word-break:break-all"></code>
+          <button type="button" class="link" data-copy="admin-link">Copy</button>
+        </div>
+      </div>
+      <div><label for="g-name">Name</label><input id="g-name" maxlength="100" required></div>
+      <div><label for="g-desc">Description</label><textarea id="g-desc" maxlength="2000"></textarea></div>
+      <div>
+        <label for="g-status">Status</label>
+        <select id="g-status">
+          <option value="draft">Draft — players can't join yet</option>
+          <option value="active">Active — players can join and submit answers</option>
+          <option value="ended">Ended — results are final</option>
+        </select>
+      </div>
+      <label class="row" style="color:inherit; font-size:1rem">
+        <input type="checkbox" id="g-auto" style="width:auto">
+        Auto-approve photos (skip manual review)
+      </label>
+      <div class="row">
+        <button type="submit">Save settings</button>
+        <button type="button" class="danger" id="reset-btn">Reset players</button>
+        <button type="button" class="danger" id="delete-btn">Delete game</button>
+      </div>
+    </form>
+
+    <div class="card">
+      <h2>Items</h2>
+      <p class="small muted">📷 Photo items: players take a picture with their phone and you approve it below.
+        Text items: answers are case-insensitive and ignore punctuation; separate several accepted answers with <code>|</code>, e.g. <code>oak tree|oak</code>.</p>
+      <div id="items"></div>
+    </div>
+
+    <form id="item-form" class="card stack">
+      <h2>Add item</h2>
+      <div><label for="i-title">Title</label><input id="i-title" maxlength="100" required></div>
+      <div><label for="i-clue">Clue</label><textarea id="i-clue" maxlength="2000"></textarea></div>
+      <div>
+        <label for="i-kind">Players submit</label>
+        <select id="i-kind">
+          <option value="photo">📷 A photo taken with their phone</option>
+          <option value="answer">A typed answer</option>
+        </select>
+      </div>
+      <div class="row">
+        <div class="grow" id="i-answer-wrap"><label for="i-answer">Answer</label><input id="i-answer" maxlength="500"></div>
+        <div style="width:100px"><label for="i-points">Points</label><input id="i-points" type="number" min="0" value="1" required></div>
+      </div>
+      <button type="submit">Add item</button>
+      <div id="item-msg"></div>
+    </form>
+
+    <div class="card">
+      <div class="row spread">
+        <h2 style="margin:0">Photos</h2>
+        <select id="photo-filter" style="width:auto" aria-label="Which photos to show">
+          <option value="pending">Waiting for review</option>
+          <option value="all">All photos</option>
+        </select>
+      </div>
+      <div id="photos" style="margin-top:12px"></div>
+    </div>
+
+    <div class="card">
+      <div class="row spread">
+        <h2 style="margin:0">Players &amp; progress</h2>
+        <button class="link" id="refresh-btn">Refresh</button>
+      </div>
+      <div class="table-wrap" style="margin-top:12px"><table id="players"></table></div>
+    </div>
+  </section>
+</main>
+
+<script src="/common.js"></script>
+<script src="/admin.js"></script>
+</body>
+</html>
