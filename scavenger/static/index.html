@@ -8,6 +8,8 @@
 </head>
 <body>
 <main>
+  <div id="banner" class="banner hidden" role="status" aria-live="polite"></div>
+
   <!-- Join screen -->
   <section id="join-view">
     <h1>Scavenger Hunt</h1>
@@ -45,7 +47,7 @@
       <div class="progress" style="margin-top:8px"><div id="progress-bar" style="width:0%"></div></div>
     </div>
 
-    <div id="game-msg"></div>
+    <div id="ended-msg" class="flash ok hidden">This game has ended. Thanks for playing!</div>
     <div id="items"></div>
 
     <div class="card">
@@ -53,12 +55,14 @@
         <h2>Leaderboard</h2>
         <button id="refresh-btn" class="link">Refresh</button>
       </div>
+      <p id="board-note" class="muted small"></p>
       <div class="table-wrap"><table id="leaderboard"></table></div>
     </div>
   </section>
 </main>
 
 <script src="/common.js"></script>
+<script src="/offline.js"></script>
 <script src="/player.js"></script>
 </body>
 </html>

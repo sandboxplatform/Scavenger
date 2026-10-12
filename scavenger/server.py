@@ -13,7 +13,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from .store import GameError, Store
+from .store import MAX_PHOTO_BYTES, GameError, Store
 
 STATIC_DIR = Path(__file__).parent / "static"
 PAGES = {"/": "index.html", "/admin": "admin.html"}
@@ -22,14 +22,21 @@ MAX_BODY = 64 * 1024
 ROUTES = []
 
 
-def route(method, pattern, admin=False):
-    """Register a handler for METHOD + path regex; named groups become int kwargs."""
+def route(method, pattern, admin=False, raw=False):
+    """Register a handler for METHOD + path regex; named groups become int kwargs.
+    With raw=True the handler gets the request body as bytes instead of parsed JSON."""
 
     def wrap(fn):
-        ROUTES.append((method, re.compile(f"^{pattern}$"), admin, fn))
+        ROUTES.append((method, re.compile(f"^{pattern}$"), admin, raw, fn))
         return fn
 
     return wrap
+
+
+class FileResponse:
+    def __init__(self, path, content_type):
+        self.path = path
+        self.content_type = content_type
 
 
 class App:
@@ -63,9 +70,26 @@ def answer(app, req, body):
     item_id = body.get("item_id")
     if not isinstance(item_id, int) or isinstance(item_id, bool):
         raise GameError("item_id must be a number")
-    result = app.store.submit_answer(player, item_id, body.get("answer"))
+    result = app.store.submit_answer(player, item_id, body.get("answer"), body.get("captured_at"))
     result.update(app.store.player_view(player))
     return result
+
+
+@route("POST", "/api/play/photo", raw=True)
+def upload_photo(app, req, body):
+    player = req.player()
+    try:
+        item_id = int(req.query.get("item_id", [""])[0])
+    except ValueError:
+        raise GameError("item_id must be a number") from None
+    result = app.store.submit_photo(player, item_id, body, req.query.get("captured_at", [None])[0])
+    result.update(app.store.player_view(player))
+    return result
+
+
+@route("GET", r"/api/play/photos/(?P<photo_id>\d+)")
+def player_photo(app, req, body, photo_id):
+    return FileResponse(*app.store.photo_file(photo_id, player=req.player()))
 
 
 @route("GET", "/api/leaderboard")
@@ -147,6 +171,16 @@ def delete_item(app, req, body, item_id):
     return {"ok": True}
 
 
+@route("GET", r"/api/admin/photos/(?P<photo_id>\d+)", admin=True)
+def admin_photo(app, req, body, photo_id):
+    return FileResponse(*app.store.photo_file(photo_id))
+
+
+@route("POST", r"/api/admin/photos/(?P<photo_id>\d+)/review", admin=True)
+def review_photo(app, req, body, photo_id):
+    return app.store.review_photo(photo_id, body.get("status"))
+
+
 @route("DELETE", r"/api/admin/players/(?P<player_id>\d+)", admin=True)
 def delete_player(app, req, body, player_id):
     app.store.delete_player(player_id)
@@ -187,9 +221,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.serve_static(url.path)
             return self.send_json({"error": "Not found"}, HTTPStatus.NOT_FOUND)
         try:
-            body = self.read_body() if method in ("POST", "PATCH") else {}
             path_matched = False
-            for m, pattern, admin, fn in ROUTES:
+            for m, pattern, admin, raw, fn in ROUTES:
                 match = pattern.match(url.path)
                 if not match:
                     continue
@@ -198,22 +231,30 @@ class Handler(BaseHTTPRequestHandler):
                     continue
                 if admin:
                     self.app.check_admin(self.headers.get("X-Admin-Token"))
+                body = self.read_body(raw) if method in ("POST", "PATCH") else {}
                 kwargs = {k: int(v) for k, v in match.groupdict().items()}
-                return self.send_json(fn(self.app, self, body, **kwargs))
+                result = fn(self.app, self, body, **kwargs)
+                if isinstance(result, FileResponse):
+                    return self.send_file(result.path, result.content_type, private=True)
+                return self.send_json(result)
             if path_matched:
                 raise GameError("Method not allowed", HTTPStatus.METHOD_NOT_ALLOWED)
             raise GameError("Not found", HTTPStatus.NOT_FOUND)
         except GameError as e:
             self.send_json({"error": str(e)}, e.status)
 
-    def read_body(self):
+    def read_body(self, raw_bytes=False):
         try:
             length = int(self.headers.get("Content-Length") or 0)
         except ValueError:
             raise GameError("Bad Content-Length") from None
-        if length > MAX_BODY:
+        if length > (MAX_PHOTO_BYTES if raw_bytes else MAX_BODY):
+            self.close_connection = True  # don't try to read the oversized body
             raise GameError("Request body too large", HTTPStatus.REQUEST_ENTITY_TOO_LARGE)
-        raw = self.rfile.read(length) if length else b"{}"
+        raw = self.rfile.read(length) if length else b""
+        if raw_bytes:
+            return raw
+        raw = raw or b"{}"
         try:
             body = json.loads(raw)
         except (ValueError, UnicodeDecodeError):
@@ -236,17 +277,25 @@ class Handler(BaseHTTPRequestHandler):
         file = (STATIC_DIR / name).resolve()
         if STATIC_DIR.resolve() not in file.parents or not file.is_file():
             return self.send_json({"error": "Not found"}, HTTPStatus.NOT_FOUND)
-        data = file.read_bytes()
+        self.send_file(file, mimetypes.guess_type(file.name)[0] or "application/octet-stream")
+
+    def send_file(self, path, content_type, private=False):
+        data = Path(path).read_bytes()
         self.send_response(HTTPStatus.OK)
-        self.send_header("Content-Type", mimetypes.guess_type(file.name)[0] or "application/octet-stream")
+        self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(data)))
+        self.send_header("X-Content-Type-Options", "nosniff")
+        # Pages and scripts revalidate so phones pick up new versions; photos are per-user.
+        self.send_header("Cache-Control", "private, max-age=86400" if private else "no-cache")
         self.end_headers()
         self.wfile.write(data)
 
 
-def make_server(host, port, db_path, admin_password, quiet=False):
-    app = App(Store(db_path), admin_password)
+def make_server(host, port, db_path, admin_password, quiet=False, photo_dir=None, ssl_context=None):
+    app = App(Store(db_path, photo_dir), admin_password)
     handler = type("BoundHandler", (Handler,), {"app": app})
     server = ThreadingHTTPServer((host, port), handler)
+    if ssl_context:
+        server.socket = ssl_context.wrap_socket(server.socket, server_side=True)
     server.quiet = quiet
     return server

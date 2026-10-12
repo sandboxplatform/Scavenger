@@ -1,5 +1,7 @@
 import json
+import tempfile
 import threading
+import time
 import unittest
 import urllib.error
 import urllib.request
@@ -8,6 +10,9 @@ from unittest import mock
 
 from scavenger.server import make_server
 from scavenger.store import GameError, Store, answer_matches
+
+JPEG = b"\xff\xd8\xff\xe0" + b"fake jpeg body"
+PNG = b"\x89PNG\r\n\x1a\n" + b"fake png body"
 
 
 class AnswerMatchingTest(unittest.TestCase):
@@ -24,7 +29,9 @@ class AnswerMatchingTest(unittest.TestCase):
 
 class StoreTest(unittest.TestCase):
     def setUp(self):
-        self.store = Store()
+        photos = tempfile.TemporaryDirectory()
+        self.addCleanup(photos.cleanup)
+        self.store = Store(photo_dir=photos.name)
         self.addCleanup(self.store.close)
         self.game = self.store.create_game("Park hunt")
         self.oak = self.store.add_item(self.game["id"], {"title": "Tree", "answer": "oak", "points": 2})
@@ -109,10 +116,110 @@ class StoreTest(unittest.TestCase):
             self.store.update_item(self.oak["id"], {"answer": "?!"})
 
 
+    def photo_files(self):
+        return sorted(p.name for p in self.store.photo_dir.iterdir())
+
+    def test_photo_items_need_no_answer_but_text_items_do(self):
+        item = self.store.add_item(self.game["id"], {"title": "Selfie", "kind": "photo"})
+        self.assertEqual(item["kind"], "photo")
+        with self.assertRaises(GameError):
+            self.store.update_item(item["id"], {"kind": "answer"})
+        with self.assertRaises(GameError):
+            self.store.add_item(self.game["id"], {"title": "T", "kind": "video"})
+
+    def test_photo_review_flow(self):
+        item = self.store.add_item(self.game["id"], {"title": "Duck", "kind": "photo", "points": 5})
+        self.activate()
+        ann = self.store.join(self.game["code"], "Ann")
+
+        with self.assertRaises(GameError):
+            self.store.submit_photo(ann, item["id"], b"not an image")
+        with self.assertRaises(GameError):
+            self.store.submit_answer(ann, item["id"], "duck")
+        with self.assertRaises(GameError):
+            self.store.submit_photo(ann, self.oak["id"], JPEG)
+
+        first = self.store.submit_photo(ann, item["id"], JPEG)
+        self.assertEqual(first["status"], "pending")
+        second = self.store.submit_photo(ann, item["id"], PNG, captured_at=time.time() - 5)
+        # The retake replaces the photo still waiting for review, file included.
+        self.assertEqual(len(self.photo_files()), 1)
+        self.assertTrue(self.photo_files()[0].endswith(".png"))
+        view = self.store.player_view(ann)
+        self.assertEqual(view["items"][2]["photo"], {"id": second["photo_id"], "status": "pending"})
+        self.assertEqual(view["score"], 0)
+
+        with self.assertRaises(GameError):
+            self.store.photo_file(first["photo_id"])
+        path, ctype = self.store.photo_file(second["photo_id"], player=ann)
+        self.assertEqual((path.read_bytes(), ctype), (PNG, "image/png"))
+
+        self.store.review_photo(second["photo_id"], "approved")
+        view = self.store.player_view(ann)
+        self.assertEqual(view["score"], 5)
+        admin = self.store.admin_view(self.game["id"])
+        self.assertEqual(admin["players"][0]["found_items"], [item["id"]])
+        self.assertEqual(admin["photos"][0]["status"], "approved")
+        with self.assertRaises(GameError) as ctx:
+            self.store.submit_photo(ann, item["id"], JPEG)
+        self.assertEqual(ctx.exception.status, 409)
+
+        self.store.review_photo(second["photo_id"], "rejected")
+        self.assertEqual(self.store.player_view(ann)["score"], 0)
+        self.assertEqual(self.store.player_view(ann)["items"][2]["photo"]["status"], "rejected")
+
+    def test_other_players_cannot_see_your_photo(self):
+        item = self.store.add_item(self.game["id"], {"title": "Duck", "kind": "photo"})
+        self.activate()
+        ann = self.store.join(self.game["code"], "Ann")
+        bob = self.store.join(self.game["code"], "Bob")
+        photo = self.store.submit_photo(ann, item["id"], JPEG)
+        with self.assertRaises(GameError):
+            self.store.photo_file(photo["photo_id"], player=bob)
+
+    def test_auto_approve(self):
+        item = self.store.add_item(self.game["id"], {"title": "Duck", "kind": "photo", "points": 3})
+        self.store.update_game(self.game["id"], {"status": "active", "auto_approve": True})
+        ann = self.store.join(self.game["code"], "Ann")
+        self.assertEqual(self.store.submit_photo(ann, item["id"], JPEG)["status"], "approved")
+        self.assertEqual(self.store.player_view(ann)["score"], 3)
+
+    def test_photo_files_are_deleted_with_their_players(self):
+        item = self.store.add_item(self.game["id"], {"title": "Duck", "kind": "photo"})
+        self.activate()
+        ann = self.store.join(self.game["code"], "Ann")
+        bob = self.store.join(self.game["code"], "Bob")
+        self.store.submit_photo(ann, item["id"], JPEG)
+        self.store.submit_photo(bob, item["id"], JPEG)
+        self.store.delete_player(ann["id"])
+        self.assertEqual(len(self.photo_files()), 1)
+        self.store.reset_game(self.game["id"])
+        self.assertEqual(self.photo_files(), [])
+
+    def test_offline_finds_keep_their_original_time(self):
+        self.activate()
+        ann = self.store.join(self.game["code"], "Ann")
+        bob = self.store.join(self.game["code"], "Bob")
+        # Bob answered first while offline but synced later; he still wins the tie.
+        self.store.submit_answer(ann, self.bench["id"], "red bench")
+        self.store.submit_answer(bob, self.bench["id"], "red bench", captured_at=ann["joined_at"] + 0.0001)
+        self.assertEqual([p["name"] for p in self.store.leaderboard(self.game["id"])], ["Bob", "Ann"])
+
+    def test_offline_times_are_clamped(self):
+        self.activate()
+        ann = self.store.join(self.game["code"], "Ann")
+        self.store.submit_answer(ann, self.oak["id"], "oak", captured_at=0)  # before joining
+        self.store.submit_answer(ann, self.bench["id"], "red bench", captured_at=time.time() + 3600)  # future
+        found = {i["id"]: i["found_at"] for i in self.store.player_view(ann)["items"]}
+        self.assertEqual(found[self.oak["id"]], ann["joined_at"])
+        self.assertLessEqual(found[self.bench["id"]], time.time())
+
+
 class HttpTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.server = make_server("127.0.0.1", 0, ":memory:", "secret", quiet=True)
+        cls.photos = tempfile.TemporaryDirectory()
+        cls.server = make_server("127.0.0.1", 0, ":memory:", "secret", quiet=True, photo_dir=cls.photos.name)
         cls.base = f"http://127.0.0.1:{cls.server.server_address[1]}"
         threading.Thread(target=cls.server.serve_forever, daemon=True).start()
 
@@ -121,15 +228,20 @@ class HttpTest(unittest.TestCase):
         cls.server.shutdown()
         cls.server.server_close()
         cls.server.RequestHandlerClass.app.store.close()
+        cls.photos.cleanup()
 
-    def call(self, method, path, body=None, headers=None):
-        data = json.dumps(body).encode() if body is not None else None
+    def call(self, method, path, body=None, headers=None, raw=False):
+        if isinstance(body, bytes):
+            data, ctype = body, "image/jpeg"
+        else:
+            data, ctype = (json.dumps(body).encode(), "application/json") if body is not None else (None, None)
         req = urllib.request.Request(self.base + path, data=data, method=method, headers=headers or {})
-        if data is not None:
-            req.add_header("Content-Type", "application/json")
+        if ctype:
+            req.add_header("Content-Type", ctype)
         try:
             with urllib.request.urlopen(req) as res:
-                return res.status, json.loads(res.read())
+                payload = res.read()
+                return res.status, payload if raw else json.loads(payload)
         except urllib.error.HTTPError as e:
             return e.code, json.loads(e.read())
 
@@ -173,6 +285,32 @@ class HttpTest(unittest.TestCase):
         self.assertEqual(self.call("DELETE", f"/api/admin/players/{detail['players'][0]['id']}", headers=admin)[0], 200)
         self.assertEqual(self.call("GET", "/api/play", headers=player)[0], 401)
         self.assertEqual(self.call("DELETE", f"/api/admin/games/{gid}", headers=admin)[0], 200)
+
+    def test_photo_upload_and_review(self):
+        admin = self.admin()
+        _, game = self.call("POST", "/api/admin/games", {"name": "Photo hunt"}, admin)
+        _, item = self.call("POST", f"/api/admin/games/{game['id']}/items",
+                            {"title": "Duck", "kind": "photo", "points": 4}, admin)
+        self.call("PATCH", f"/api/admin/games/{game['id']}", {"status": "active"}, admin)
+        ann = {"X-Player-Token": self.call("POST", "/api/join", {"code": game["code"], "name": "Ann"})[1]["token"]}
+        bob = {"X-Player-Token": self.call("POST", "/api/join", {"code": game["code"], "name": "Bob"})[1]["token"]}
+
+        status, res = self.call("POST", f"/api/play/photo?item_id={item['id']}", b"plain text", ann)
+        self.assertEqual(status, 400)
+        status, res = self.call("POST", f"/api/play/photo?item_id={item['id']}&captured_at=1", JPEG, ann)
+        self.assertEqual((status, res["status"]), (200, "pending"))
+        photo_id = res["photo_id"]
+
+        self.assertEqual(self.call("GET", f"/api/play/photos/{photo_id}", headers=ann, raw=True), (200, JPEG))
+        self.assertEqual(self.call("GET", f"/api/play/photos/{photo_id}", headers=bob)[0], 404)
+        self.assertEqual(self.call("GET", f"/api/admin/photos/{photo_id}", headers=admin, raw=True), (200, JPEG))
+        self.assertEqual(self.call("GET", f"/api/admin/photos/{photo_id}")[0], 401)
+
+        _, detail = self.call("GET", f"/api/admin/games/{game['id']}", headers=admin)
+        self.assertEqual(detail["players"][0]["pending_items"], [item["id"]])
+        self.assertEqual(self.call("POST", f"/api/admin/photos/{photo_id}/review", {"status": "approved"}, admin)[0], 200)
+        _, board = self.call("GET", f"/api/leaderboard?code={game['code']}")
+        self.assertEqual(board["players"][0], {"name": "Ann", "score": 4, "found": 1})
 
     def test_bad_requests(self):
         admin = self.admin()

@@ -61,6 +61,10 @@
           <option value="ended">Ended — results are final</option>
         </select>
       </div>
+      <label class="row" style="color:inherit; font-size:1rem">
+        <input type="checkbox" id="g-auto" style="width:auto">
+        Auto-approve photos (skip manual review)
+      </label>
       <div class="row">
         <button type="submit">Save settings</button>
         <button type="button" class="danger" id="reset-btn">Reset players</button>
@@ -70,7 +74,8 @@
 
     <div class="card">
       <h2>Items</h2>
-      <p class="small muted">Answers are case-insensitive and ignore punctuation. Separate several accepted answers with <code>|</code>, e.g. <code>oak tree|oak</code>.</p>
+      <p class="small muted">📷 Photo items: players take a picture with their phone and you approve it below.
+        Text items: answers are case-insensitive and ignore punctuation; separate several accepted answers with <code>|</code>, e.g. <code>oak tree|oak</code>.</p>
       <div id="items"></div>
     </div>
 
@@ -78,13 +83,31 @@
       <h2>Add item</h2>
       <div><label for="i-title">Title</label><input id="i-title" maxlength="100" required></div>
       <div><label for="i-clue">Clue</label><textarea id="i-clue" maxlength="2000"></textarea></div>
+      <div>
+        <label for="i-kind">Players submit</label>
+        <select id="i-kind">
+          <option value="photo">📷 A photo taken with their phone</option>
+          <option value="answer">A typed answer</option>
+        </select>
+      </div>
       <div class="row">
-        <div class="grow"><label for="i-answer">Answer</label><input id="i-answer" maxlength="500" required></div>
+        <div class="grow" id="i-answer-wrap"><label for="i-answer">Answer</label><input id="i-answer" maxlength="500"></div>
         <div style="width:100px"><label for="i-points">Points</label><input id="i-points" type="number" min="0" value="1" required></div>
       </div>
       <button type="submit">Add item</button>
       <div id="item-msg"></div>
     </form>
+
+    <div class="card">
+      <div class="row spread">
+        <h2 style="margin:0">Photos</h2>
+        <select id="photo-filter" style="width:auto" aria-label="Which photos to show">
+          <option value="pending">Waiting for review</option>
+          <option value="all">All photos</option>
+        </select>
+      </div>
+      <div id="photos" style="margin-top:12px"></div>
+    </div>
 
     <div class="card">
       <div class="row spread">

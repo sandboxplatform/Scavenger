@@ -49,7 +49,8 @@ async function showList() {
         el("button", { class: "link", onclick: () => openGame(g.id) }, g.name), " ",
         el("span", { class: `badge ${g.status}` }, g.status),
         el("div", { class: "small muted" },
-          `Code ${g.code} · ${g.item_count} item${g.item_count === 1 ? "" : "s"} · ${g.player_count} player${g.player_count === 1 ? "" : "s"}`)),
+          `Code ${g.code} · ${g.item_count} item${g.item_count === 1 ? "" : "s"} · ${g.player_count} player${g.player_count === 1 ? "" : "s"}` +
+          (g.pending_photos ? ` · 📷 ${g.pending_photos} to review` : ""))),
       el("button", { class: "secondary", onclick: () => openGame(g.id) }, "Manage"))));
 }
 
@@ -77,6 +78,7 @@ async function openGame(id) {
   show("game-view");
   renderSettings();
   renderItems();
+  renderPhotos();
   renderPlayers();
   clearInterval(pollTimer);
   pollTimer = setInterval(refreshPlayers, 10000);
@@ -87,6 +89,8 @@ async function refreshPlayers() {
   try {
     const fresh = await adminApi("GET", `/api/admin/games/${current.game.id}`);
     current.players = fresh.players;
+    current.photos = fresh.photos;
+    renderPhotos();
     renderPlayers();
   } catch (_) {}
 }
@@ -100,6 +104,7 @@ function renderSettings() {
   $("g-name").value = g.name;
   $("g-desc").value = g.description;
   $("g-status").value = g.status;
+  $("g-auto").checked = g.auto_approve;
 }
 
 $("game-form").addEventListener("submit", async (ev) => {
@@ -107,6 +112,7 @@ $("game-form").addEventListener("submit", async (ev) => {
   try {
     current.game = await adminApi("PATCH", `/api/admin/games/${current.game.id}`, {
       name: $("g-name").value, description: $("g-desc").value, status: $("g-status").value,
+      auto_approve: $("g-auto").checked,
     });
     renderSettings();
     flash($("game-msg"), "Settings saved.");
@@ -147,11 +153,18 @@ function itemEditor(item, idx) {
   const f = {
     title: el("input", { value: item.title, maxlength: 100, required: true, "aria-label": "Title" }),
     clue: el("textarea", { maxlength: 2000, "aria-label": "Clue" }),
-    answer: el("input", { value: item.answer, maxlength: 500, required: true, "aria-label": "Answer" }),
+    kind: el("select", { "aria-label": "Players submit" },
+      el("option", { value: "photo", selected: item.kind === "photo" }, "📷 A photo"),
+      el("option", { value: "answer", selected: item.kind === "answer" }, "A typed answer")),
+    answer: el("input", { value: item.answer, maxlength: 500, "aria-label": "Answer" }),
     points: el("input", { type: "number", min: 0, value: item.points, required: true, "aria-label": "Points" }),
     position: el("input", { type: "number", value: item.position, required: true, "aria-label": "Order" }),
   };
   f.clue.value = item.clue;
+  const answerWrap = el("div", { class: "grow" }, el("label", {}, "Answer"), f.answer);
+  const syncKind = () => answerWrap.classList.toggle("hidden", f.kind.value === "photo");
+  f.kind.addEventListener("change", syncKind);
+  syncKind();
   const msg = el("div");
   const body = el("form", {
     class: "stack hidden",
@@ -160,7 +173,7 @@ function itemEditor(item, idx) {
       ev.preventDefault();
       try {
         await adminApi("PATCH", `/api/admin/items/${item.id}`, {
-          title: f.title.value, clue: f.clue.value, answer: f.answer.value,
+          title: f.title.value, clue: f.clue.value, kind: f.kind.value, answer: f.answer.value,
           points: Number(f.points.value), position: Number(f.position.value),
         });
         await openGame(current.game.id);
@@ -172,8 +185,9 @@ function itemEditor(item, idx) {
   },
     el("div", {}, el("label", {}, "Title"), f.title),
     el("div", {}, el("label", {}, "Clue"), f.clue),
+    el("div", {}, el("label", {}, "Players submit"), f.kind),
     el("div", { class: "row" },
-      el("div", { class: "grow" }, el("label", {}, "Answer"), f.answer),
+      answerWrap,
       el("div", { style: "width:90px" }, el("label", {}, "Points"), f.points),
       el("div", { style: "width:90px" }, el("label", {}, "Order"), f.position)),
     el("div", { class: "row" },
@@ -196,7 +210,8 @@ function itemEditor(item, idx) {
     el("div", { class: "row spread" },
       el("div", {},
         el("strong", {}, `${idx + 1}. ${item.title}`),
-        el("div", { class: "small muted" }, `Answer: ${item.answer} · ${item.points} pt${item.points === 1 ? "" : "s"} · found by `,
+        el("div", { class: "small muted" },
+          `${item.kind === "photo" ? "📷 Photo" : `Answer: ${item.answer}`} · ${item.points} pt${item.points === 1 ? "" : "s"} · found by `,
           el("span", { "data-found-by": item.id }, foundBy(item.id)))),
       el("button", { class: "secondary", onclick: () => body.classList.toggle("hidden") }, "Edit")),
     body);
@@ -206,10 +221,11 @@ $("item-form").addEventListener("submit", async (ev) => {
   ev.preventDefault();
   try {
     await adminApi("POST", `/api/admin/games/${current.game.id}/items`, {
-      title: $("i-title").value, clue: $("i-clue").value,
+      title: $("i-title").value, clue: $("i-clue").value, kind: $("i-kind").value,
       answer: $("i-answer").value, points: Number($("i-points").value),
     });
     $("item-form").reset();
+    syncNewItemKind();
     await openGame(current.game.id);
     flash($("item-msg"), "Item added.");
   } catch (e) {
@@ -237,7 +253,8 @@ function renderPlayers() {
   const rows = current.players.map((p, rank) => el("tr", {},
     el("td", {}, rank + 1),
     el("td", {}, p.name),
-    ...items.map(it => el("td", { title: it.title }, p.found_items.includes(it.id) ? "✓" : "·")),
+    ...items.map(it => el("td", { title: it.title },
+      p.found_items.includes(it.id) ? "✓" : p.pending_items.includes(it.id) ? "📷" : "·")),
     el("td", { class: "num" }, p.score),
     el("td", { class: "small muted" }, formatTime(p.last_found)),
     el("td", {}, el("button", {
@@ -254,6 +271,49 @@ function renderPlayers() {
     }, "Remove"))));
   $("players").replaceChildren(header, ...rows);
 }
+
+// ----- photo review ----------------------------------------------------------
+
+function renderPhotos() {
+  const filter = $("photo-filter").value;
+  const photos = current.photos.filter(ph => filter === "all" || ph.status === "pending");
+  if (!photos.length) {
+    return $("photos").replaceChildren(el("p", { class: "muted" },
+      filter === "pending" ? "No photos waiting for review." : "No photos submitted yet."));
+  }
+  const headers = { "X-Admin-Token": adminToken || "" };
+  $("photos").replaceChildren(el("div", { class: "photo-grid" }, ...photos.map(ph => {
+    const review = (status) => async () => {
+      try {
+        await adminApi("POST", `/api/admin/photos/${ph.id}/review`, { status });
+        await refreshPlayers();
+      } catch (e) {
+        flash($("game-msg"), e.message, "err");
+      }
+    };
+    return el("div", { class: `photo-card ${ph.status}` },
+      el("a", { href: "#", onclick: async (ev) => {
+        ev.preventDefault();
+        window.open(await imageUrl(`/api/admin/photos/${ph.id}`, headers), "_blank");
+      } }, lazyImage(`/api/admin/photos/${ph.id}`, headers, `${ph.player_name}: ${ph.item_title}`)),
+      el("strong", {}, ph.player_name),
+      el("div", { class: "small" }, ph.item_title),
+      el("div", { class: "small muted" }, `Taken ${formatTime(ph.captured_at)}`),
+      el("div", { class: `small status ${ph.status}` }, ph.status),
+      el("div", { class: "row", style: "margin-top:8px" },
+        ph.status !== "approved" ? el("button", { onclick: review("approved") }, "Approve") : null,
+        ph.status !== "rejected" ? el("button", { class: "danger", onclick: review("rejected") }, "Reject") : null));
+  })));
+}
+
+function syncNewItemKind() {
+  const photo = $("i-kind").value === "photo";
+  $("i-answer-wrap").classList.toggle("hidden", photo);
+  $("i-answer").required = !photo;
+}
+$("i-kind").addEventListener("change", syncNewItemKind);
+syncNewItemKind();
+$("photo-filter").addEventListener("change", renderPhotos);
 
 $("refresh-btn").addEventListener("click", refreshPlayers);
 $("back-btn").addEventListener("click", showList);
